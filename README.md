@@ -17,8 +17,20 @@ Original videos are never modified. Everything the tool writes goes into a
 3. For tracking, install TRex in its own conda environment named `track`
    ([instructions](https://trex.run/docs/install.html)):
    `conda create -n track -c trexing trex`
-4. Get this repository and start it: double-click **`Mask and Count.bat`** (Windows), or
-   run `python main.py [folder]`.
+4. Open a terminal (cmd, PowerShell, or any shell) in the folder where you want the tool,
+   then download and start it:
+
+   ```
+   git clone https://github.com/soulsynapse/antscihub-mask-and-count.git
+   cd antscihub-mask-and-count
+   python main.py
+   ```
+
+   This creates an `antscihub-mask-and-count` subfolder. To clone into the current folder
+   itself instead, use `git clone https://github.com/soulsynapse/antscihub-mask-and-count.git .`
+   (the folder must be empty). Afterwards, start the app by double-clicking
+   **`Mask and Count.bat`** (Windows) or with `python main.py [folder]`. Run `git pull`
+   in the folder to update.
 
 The first start creates `.venv` and installs the Python packages (a minute or two; needs
 internet). Later starts just check it. `main.py` runs under any Python 3 and picks a
