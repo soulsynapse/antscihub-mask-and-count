@@ -9,7 +9,8 @@ from .videos import OUTPUT_DIRNAME
 FILENAME = "folder_settings.json"
 # mask_settings_confirmed: the user has reviewed the mask_* encode settings in the mask
 # window for this folder, so "Mask all videos" can run without sending them there first.
-DEFAULTS = {"mask_border_pct": 0, "mask_settings_confirmed": False}
+# trex_settings_confirmed: likewise for the TRex parameters before the first Track.
+DEFAULTS = {"mask_border_pct": 0, "mask_settings_confirmed": False, "trex_settings_confirmed": False}
 
 
 def settings_path(folder: Path) -> Path:

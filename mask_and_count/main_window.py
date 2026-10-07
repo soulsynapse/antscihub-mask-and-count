@@ -1,4 +1,5 @@
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt
@@ -21,10 +22,15 @@ from .box_editor import BoxEditorDialog
 from .folder_settings import load_folder_settings
 from .mask_window import BatchMaskDialog, MaskWindow
 from .masking import MaskSettings
+from . import trex
+from .trex_help import show_trex_help
+from .trex_settings import TrexSettingsWindow
 from .videos import Video, scan_folder
 
 COLUMNS = ["Video", "Boxes drawn", "Masked video", "Tracked"]
 MASK_COL = 2
+TRACK_COL = 3
+TREX_ENV_KEY = "trex_conda_env"
 MASK_STATE_TEXT = {"none": "—", "ok": "✔", "stale": "stale"}
 
 
@@ -35,10 +41,6 @@ def _centered(text: str) -> QTableWidgetItem:
     item = QTableWidgetItem(text)
     item.setTextAlignment(Qt.AlignCenter)
     return item
-
-
-def _status_item(done: bool) -> QTableWidgetItem:
-    return _centered("✔" if done else "—")
 
 
 def _box_count_item(v: Video) -> QTableWidgetItem:
@@ -115,6 +117,10 @@ class MainWindow(QMainWindow):
         top.addWidget(self.refresh_btn)
         top.addWidget(self.boxes_btn)
         top.addWidget(self.folder_label, 1)
+        help_btn = QPushButton("Tuning in TRex…")
+        help_btn.setToolTip("How to check detections, tune tracking and export CSVs inside TRex.")
+        help_btn.clicked.connect(lambda: show_trex_help(self))
+        top.addWidget(help_btn)
 
         self.table = QTableWidget(0, len(COLUMNS))
         self.table.setHorizontalHeaderLabels(COLUMNS)
@@ -138,8 +144,15 @@ class MainWindow(QMainWindow):
         header.setSectionResizeMode(MASK_COL, QHeaderView.Fixed)
         header.resizeSection(MASK_COL, self.mask_all_btn.sizeHint().width() + 16)
         self.table.verticalHeader().setDefaultSectionSize(QPushButton("Open…").sizeHint().height() + 6)
+        self.trex_settings_btn = QPushButton("TRex settings…")
+        self.trex_settings_btn.setToolTip("Tracking parameters TRex gets for every video in this folder.")
+        self.trex_settings_btn.clicked.connect(lambda: self.open_trex_settings())
+        self.trex_settings_btn.setEnabled(False)
+        header.setSectionResizeMode(TRACK_COL, QHeaderView.Fixed)
+        header.resizeSection(TRACK_COL, self.trex_settings_btn.sizeHint().width() + 16)
         column_bar = ColumnButtonBar(self.table)
         column_bar.add(MASK_COL, self.mask_all_btn)
+        column_bar.add(TRACK_COL, self.trex_settings_btn)
 
         layout = QVBoxLayout()
         layout.addLayout(top)
@@ -190,9 +203,11 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, 1, _box_count_item(v))
             self.table.setItem(row, MASK_COL, QTableWidgetItem())
             self.table.setCellWidget(row, MASK_COL, self._mask_cell(row, v))
-            self.table.setItem(row, 3, _status_item(v.has_tracking()))
+            self.table.setItem(row, TRACK_COL, QTableWidgetItem())
+            self.table.setCellWidget(row, TRACK_COL, self._track_cell(row, v))
 
         self.mask_all_btn.setEnabled(any(_safe_box_count(v) for v in self.videos))
+        self.trex_settings_btn.setEnabled(bool(self.videos))
         self.statusBar().showMessage(f"{len(self.videos)} video(s) found")
 
     def _mask_cell(self, row: int, v: Video) -> QWidget:
@@ -228,6 +243,93 @@ class MainWindow(QMainWindow):
         dialog.exec()
         self.refresh()
         self.table.selectRow(row)
+
+    def _track_cell(self, row: int, v: Video) -> QWidget:
+        label = QLabel("✔" if v.has_tracking() else "—")
+        label.setToolTip("✔ once TRex has exported CSV files into this video's TRex folder.")
+        button = QPushButton("Track…")
+        button.setToolTip("Open this video in TRex with the squares applied as track_include.")
+        button.clicked.connect(lambda: self.open_trex(row))
+        if not _safe_box_count(v):
+            button.setEnabled(False)
+            button.setToolTip("Draw boxes first.")
+        cell = QWidget()
+        lay = QHBoxLayout(cell)
+        lay.setContentsMargins(6, 1, 4, 1)
+        lay.addWidget(label, 1, Qt.AlignCenter)
+        lay.addWidget(button)
+        return cell
+
+    def open_trex_settings(self, track_after: bool = False, video: Video | None = None) -> bool:
+        window = TrexSettingsWindow(self.folder, self.videos, track_after, video, self)
+        return window.exec() == QDialog.Accepted
+
+    def open_trex(self, row: int):
+        video = self.videos[row]
+        try:
+            source, why = trex.choose_input(video)
+        except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as e:
+            QMessageBox.critical(self, "Could not inspect video", str(e))
+            return
+        if source is None:
+            box = QMessageBox(self)
+            box.setWindowTitle("Masked video needed")
+            box.setText(f"{video.source.name} can't go to TRex directly: {why}.")
+            box.setInformativeText("Generate the masked (deinterlaced, re-encoded) video first, then click Track again.")
+            open_mask = box.addButton("Open mask window…", QMessageBox.AcceptRole)
+            box.addButton(QMessageBox.Cancel)
+            box.exec()
+            if box.clickedButton() is open_mask:
+                self.open_mask_window(row)
+            return
+        if not load_folder_settings(self.folder).get("trex_settings_confirmed"):
+            # First Track in this folder: dial in the parameters before TRex starts.
+            if not self.open_trex_settings(track_after=True, video=video):
+                return
+        if not self._handle_earlier_conversion(video, source):
+            return
+        env = QSettings().value(TREX_ENV_KEY, trex.DEFAULT_CONDA_ENV)
+        try:
+            log = trex.launch(video, source, self.videos, env)
+        except (OSError, ValueError) as e:
+            QMessageBox.critical(self, "Could not start TRex", str(e))
+            return
+        self.statusBar().showMessage(
+            f"Opening {source.name} in TRex (conda env '{env}', {why}). "
+            f"See 'Tuning in TRex…' for tuning and export. Log: {log}", 20000
+        )
+
+    def _handle_earlier_conversion(self, video: Video, source: Path) -> bool:
+        """If TRex converted this input before, ask whether to redo it. False = cancelled."""
+        files = trex.conversion_files(video, source)
+        pv = next((p for p in files if p.suffix == ".pv"), None)
+        if pv is None:
+            return True
+        stat = pv.stat()
+        when = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
+        box = QMessageBox(self)
+        box.setWindowTitle("Earlier TRex conversion found")
+        box.setText(f"TRex already converted {source.name} ({stat.st_size / 1e6:.0f} MB, {when}).")
+        box.setInformativeText(
+            "TRex opens that file instead of converting again. Convert again if detection "
+            "settings changed (they only apply during conversion) or if TRex was closed before "
+            "converting finished, which leaves a file with only part of the video.\n\n"
+            "Converting again deletes TRex's files for this video in its TRex folder: "
+            + ", ".join(p.name for p in files) + "."
+        )
+        redo = box.addButton("Convert again", QMessageBox.AcceptRole)
+        reuse = box.addButton("Use existing", QMessageBox.ActionRole)
+        box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(redo)
+        box.exec()
+        if box.clickedButton() is redo:
+            try:
+                trex.clear_conversion(video, source, self.videos)
+            except OSError as e:
+                QMessageBox.critical(self, "Could not delete", f"{e}\n\nIs TRex still open on this video?")
+                return False
+            return True
+        return box.clickedButton() is reuse
 
     def _mask_window(self, video: Video, batch: list[Video] | None = None) -> MaskWindow | None:
         try:

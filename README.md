@@ -23,7 +23,8 @@ any path that is a source video.
 | Folder picker + video table | working |
 | Box-drawing pop-over | working (two-click rotated squares) |
 | ffmpeg masking | working (preview, per-video and batch) |
-| TRex run + CSV collection | not started |
+| TRex settings window + calibration, launch with squares as `track_include` | working (opens the TRex GUI) |
+| Unattended TRex run + CSV collection | not started |
 
 ## Requirements
 
@@ -88,10 +89,9 @@ route is a dedicated conda environment:
 conda create -n trex -c trexing trex
 ```
 
-Keep TRex in its own environment; do not install it into `.venv`. Once tracking is
-wired up, the app will need the path to the `trex` executable inside that
-environment (find it with `conda run -n trex where trex` on Windows or
-`conda run -n trex which trex` elsewhere).
+Keep TRex in its own environment; do not install it into `.venv`. The app starts TRex
+with `conda run -n <env> trex`. The env name defaults to `track` and is stored per
+machine in Qt settings under the key `trex_conda_env`; there is no UI for it yet.
 
 ## Running
 
@@ -185,6 +185,82 @@ all** then runs the batch. After that, it asks for confirmation (listing the vid
 settings) with an **Adjust settings…** option. The batch runs one video at a time and can
 be stopped; a stopped video's partial output is deleted.
 
+### Tracking
+
+The **Tracked** column shows ✔ once TRex has exported CSVs into the video's TRex folder,
+plus a **Track…** button that opens the video in the TRex GUI with the mask applied.
+TRex has no pixel-mask option for ordinary video files, but it has `track_include`:
+polygons outside which detected objects are ignored. The app passes each mask square
+(the drawn square scaled by the mask border, rotation included) as a 4-point polygon.
+That means no masked video is needed when TRex can read the original. Which file opens:
+
+1. The masked video, if it exists and is up to date (`track_include` is passed as well).
+2. Otherwise the original, if TRex can read it and it is not interlaced.
+3. Otherwise you are asked to generate the masked video first. This is always the case
+   for `.MTS`/`.m2ts`: TRex 2.0.0 reads AVCHD transport streams as 0 frames and quits.
+   It also applies to interlaced video, which TRex would track as combed frames.
+
+TRex starts converting and tracking as soon as it opens a file; its command line has no
+way to open a file on its settings screen first (tested on 2.0.0: `-i`, `-source`, and
+`-task none` all convert straight away). So the tracking parameters are set in this app
+instead, before TRex starts.
+
+**TRex settings…** (the button above the Tracked column) edits the parameters TRex gets
+for every video in the folder. They are stored in `folder_settings.json`. The first
+**Track…** in a folder opens this window first (**Save & track**). The form covers the
+core background-subtraction parameters, each showing TRex's parameter name and
+explanation: `detect_type`, `track_max_individuals`, `meta_real_width`,
+`detect_threshold`, `detect_size_filter`, `track_threshold`, `track_size_filter`,
+`track_max_speed`, `track_background_subtraction`, `calculate_posture`. Fields left at
+*TRex default* are not written, so TRex's own default applies. The exception is
+`detect_type`, which starts at `background_subtraction` because the TRex build tested
+defaults to a YOLO human-pose model. **Other parameters** takes any further TRex
+parameter as `name = value` lines in TRex's syntax. A preview shows the exact settings
+file TRex will receive.
+
+**Calibrate from video…** (in that window) opens a frame of a chosen video with zoom:
+
+- *Scale line*: click across something of known length and enter it in cm. This sets
+  `meta_real_width`, which the size filters and maximum speed depend on.
+- *Ant*: click the tip of the head, then the end of the gaster, on a few typical ants
+  that are not touching others. Each gets its body length and the area of the blob
+  under the line.
+- *Threshold*: a slider with a live overlay (magenta) of the pixels that would count as
+  objects. The background is the per-pixel median of 25 frames sampled across the video.
+  Raise the threshold until shadows and noise disappear but ants stay whole. This
+  approximates TRex's conversion; it is not TRex's own code.
+- *Apply to settings* fills in only the **conversion** values: `detect_threshold`,
+  `meta_real_width`, and a generous `detect_size_filter` from 0.25× the smallest to 50×
+  the largest measured blob (cm²). Conversion decides what TRex stores in the `.pv`, and
+  whatever it drops is gone until you convert again. So the range keeps small workers
+  and clumps of touching ants, and leaves strictness to tracking. Tracking values
+  (`track_threshold`, `track_size_filter`) are best left at *TRex default* and tuned live
+  in TRex after conversion, which does not require converting again. The results show a
+  single-ant range (0.5× smallest to 1.5× largest) for that purpose. Sizes are cm² via
+  `cm_per_pixel`, as in the TRex 1.x documentation; this was not confirmed separately
+  for 2.0.
+
+On each launch the app rewrites `<name>_trex/mask_and_count.settings` from the folder's
+parameters, plus `output_format = csv` and this video's `track_include`. It also writes
+`cm_per_pixel` (frame width in cm ÷ the video's width in px). TRex 2.0.0 did not derive it
+from `meta_real_width` when converting an `.mp4` and left it at 1, which made cm² size
+ranges act as px² and drop every blob. It passes that
+file with `-s` and the output folder with `-d <name>_trex`. TRex's console output goes to
+`trex_launch.log` there.
+
+**Tuning in TRex…** (main window toolbar, and in the TRex settings window) opens a help
+window that can stay open beside TRex. It walks through checking raw detections, reading
+ant sizes by clicking them, editing `track_*` parameters in TRex's 🔍 Parameters field,
+re-analysing, exporting CSVs, and copying the final values back into **TRex settings…**
+so every video gets them. Its button names come from TRex 2.0.0's layout files.
+
+If TRex already converted this input (a `<input name>.pv` in the TRex folder), TRex
+would open that file instead of converting again. Track… asks first: **Convert again**
+(the default) deletes TRex's `.pv`, `.results`, saved `.settings` and average image for
+that input. Use it when detection settings changed, since they only apply during
+conversion, or when TRex was closed before converting finished, which leaves a `.pv`
+holding only part of the video. **Use existing** keeps them.
+
 ## Output layout
 
 For a source folder `videos/` containing `colony_A.mp4`:
@@ -199,6 +275,8 @@ videos/
     ├── colony_A_masked.mp4          # ffmpeg output      → "Masked video"
     ├── colony_A_masked.json         # what the masked video was made from (stale check)
     └── colony_A_trex/               # TRex output dir    → "Tracked" (any .csv inside)
+        ├── mask_and_count.settings  # squares as track_include (rewritten each launch)
+        └── trex_launch.log
 ```
 
 Status in the table is derived entirely from which of these files exist, so there is
@@ -216,6 +294,10 @@ mask_and_count/
 ├── folder_settings.py  # per-folder settings (mask border, mask settings)
 ├── masking.py       # mask image, ffprobe, ffmpeg encode/preview, MaskJob
 ├── mask_window.py   # mask preview/settings window and Mask-all batch dialog
+├── trex.py          # TRex input choice, track_include settings, launch
+├── trex_settings.py # folder TRex parameters and their window
+├── trex_help.py     # 'Tuning in TRex' help window
+├── calibration.py   # scale line, ant lines, threshold preview
 └── videos.py        # folder scanning, output paths, per-video status
 requirements.txt
 videos_for_test/     # local test footage; contents are gitignored

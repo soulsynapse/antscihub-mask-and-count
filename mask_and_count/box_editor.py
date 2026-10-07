@@ -1,13 +1,6 @@
 """Pop-over for drawing (possibly rotated) square keep-regions on a video frame."""
 
-import os
-
-# Seeking into long-GOP H.264 (e.g. AVCHD .MTS) makes ffmpeg log "Missing reference
-# picture" on stderr. It's noise here: a frame that fails to decode is caught by read().
-# 8 = AV_LOG_FATAL. Must be set before cv2 loads; set it yourself to override.
-os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "8")
-
-import cv2  # noqa: E402
+import cv2  # decoder log level: see __main__.py
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPen, QPolygonF, QShortcut
 from PySide6.QtWidgets import (
@@ -56,7 +49,8 @@ class FrameReader:
         # Container-reported; can be off by a few frames for VFR or damaged files.
         self.frame_count = max(1, int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)))
 
-    def read(self, index: int) -> QImage | None:
+    def read_array(self, index: int):
+        """BGR uint8 array for frame `index`, or None if it does not decode."""
         if index < self.EXACT_DECODE_BELOW:
             self.cap.release()
             self.cap = cv2.VideoCapture(self.path)
@@ -65,7 +59,11 @@ class FrameReader:
         else:
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, index)
         ok, frame = self.cap.read()
-        if not ok:
+        return frame if ok else None
+
+    def read(self, index: int) -> QImage | None:
+        frame = self.read_array(index)
+        if frame is None:
             return None
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, _ = rgb.shape
