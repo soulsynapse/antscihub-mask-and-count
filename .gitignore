@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Local test footage: keep the folder, never commit the videos or outputs
+videos_for_test/*
+!videos_for_test/.gitkeep

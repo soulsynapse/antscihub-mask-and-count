@@ -1,0 +1,3 @@
+PySide6>=6.6
+# headless: the full opencv-python wheel bundles its own Qt, which collides with PySide6
+opencv-python-headless>=4.9
